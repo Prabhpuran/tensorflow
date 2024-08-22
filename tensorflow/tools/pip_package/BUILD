@@ -8,7 +8,13 @@ load("//tensorflow:tensorflow.bzl", "if_wheel_dependency", "if_with_tpu_support"
 load("//tensorflow/core/platform:build_config_root.bzl", "tf_additional_license_deps")
 load("//tensorflow/tools/pip_package/utils:data_deps.bzl", "collect_data_files")
 load("//tensorflow/tools/pip_package/utils:py_deps.bzl", "transitive_py_deps")
-load("//tensorflow/tools/pip_package/utils:tf_wheel.bzl", "tf_wheel", "tf_wheel_dep")
+load(
+    "//tensorflow/tools/pip_package/utils:tf_wheel.bzl",
+    "tf_wheel",
+    "tf_wheel_dep",
+    "unpack_tf_wheel",
+    #"wheel_api_test",
+)
 
 package(default_visibility = ["//visibility:public"])
 
@@ -313,6 +319,33 @@ py_test(
 )
 
 py_test(
+    name = "new_import_api_packages_test_cpu",
+    srcs = ["import_api_packages_test.py"],
+    main = "import_api_packages_test.py",
+    tags = [
+        "cpu",
+        "no_oss",
+    ],
+    deps = [
+        ":unpacked_tf_wheel",
+        # "@pypi_astunparse//:pkg",
+        # "@pypi_gast//:pkg",
+        # "//third_party/py/numpy",
+        # "@pypi_opt_einsum//:pkg",
+        # "@pypi_termcolor//:pkg",
+        # "@pypi_typing_extensions//:pkg",
+        # "@absl_py//absl:app",
+        # "@absl_py//absl/testing:parameterized",
+        # "@com_google_protobuf//:protobuf_python",
+        # "@flatbuffers//:runtime_py",
+        # "@ml_dtypes",
+        # "@pypi_packaging//:pkg",
+        # "@pypi_requests//:pkg",
+        # "@pypi_wrapt//:pkg",
+    ],
+)
+
+py_test(
     name = "import_api_packages_test_gpu",
     srcs = if_wheel_dependency(
         ["import_api_packages_test.py"],
@@ -324,3 +357,37 @@ py_test(
     ],
     deps = if_wheel_dependency(tf_wheel_dep()),
 )
+
+unpack_tf_wheel(
+    name = "unpacked_tf_wheel",
+    wheel = ":wheel",
+)
+
+# wheel_api_test(
+#     name = "test_import_api_packages",
+#     srcs = "test_import_api_packages.py",
+#     data = [":unpacked_tf_wheel"],
+#     env = {"UNPACKED_WHEEL": "$(location :unpacked_tf_wheel)"},
+#     include_backends = [
+#         "cpu",
+#         "gpu",
+#     ],
+#     tags = ["no_windows"],
+#     deps = [
+#         ":unpacked_tf_wheel",
+#         "@pypi_astunparse//:pkg",
+#         "@pypi_gast//:pkg",
+#         "//third_party/py/numpy",
+#         "@pypi_opt_einsum//:pkg",
+#         "@pypi_termcolor//:pkg",
+#         "@pypi_typing_extensions//:pkg",
+#         "@absl_py//absl:app",
+#         "@absl_py//absl/testing:parameterized",
+#         "@com_google_protobuf//:protobuf_python",
+#         "@flatbuffers//:runtime_py",
+#         "@ml_dtypes",
+#         "@pypi_packaging//:pkg",
+#         "@pypi_requests//:pkg",
+#         "@pypi_wrapt//:pkg",
+#     ],
+# )

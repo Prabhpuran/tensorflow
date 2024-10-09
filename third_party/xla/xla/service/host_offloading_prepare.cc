@@ -121,6 +121,23 @@ absl::StatusOr<bool> ConvertToCustomCall(HloModule* module) {
             async_computation->AddInstruction(std::move(custom_call)));
         TF_RETURN_IF_ERROR(async_computation->RemoveInstruction(call));
 
+        // In case instructions have been converted to host compute after
+        // LayoutAssignment, remove the tiles and set the memory space back to
+        // default.
+        for (HloComputation* called_computation :
+             async_computation->root_instruction()->called_computations()) {
+          for (HloInstruction* instr : called_computation->instructions()) {
+            if (!instr->shape().has_layout()) {
+              continue;
+            }
+            // Remove tiles from the layout.
+            instr->mutable_shape()->mutable_layout()->clear_tiles();
+            // Set memory space back to default.
+            instr->mutable_shape()->mutable_layout()->set_memory_space(
+                Layout::kDefaultMemorySpace);
+          }
+        }
+
         changed = true;
       }
     }

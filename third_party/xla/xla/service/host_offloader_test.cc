@@ -39,6 +39,7 @@ limitations under the License.
 #include "xla/service/pattern_matcher_gmock.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/side_effect_util.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/verified_hlo_module.h"
 #include "xla/tsl/lib/core/status_test_util.h"
@@ -4188,6 +4189,33 @@ TEST_F(HostOffloaderTest, AvoidRedundantCopiesToHost) {
   for (HloInstruction* instr : module->entry_computation()->instructions()) {
     ASSERT_NE(instr->opcode(), HloOpcode::kCopy);
   }
+}
+
+TEST_F(HostOffloaderTest, MarkCollectiveAsHostCompute) {
+  const absl::string_view hlo_string = R"(
+HloModule jit_f, entry_computation_layout={(f32[1024,256]{1,0:T(8,128)}, f32[1024,256]{1,0:T(8,128)})->f32[1024,1024]{1,0:T(8,128)S(5)}}, num_partitions=4
+
+ENTRY main.8_spmd {
+  param = f32[1024,256]{1,0:T(8,128)} parameter(0), sharding={devices=[1,4]<=[4]}
+  param.1 = f32[1024,256]{1,0:T(8,128)} parameter(1), sharding={devices=[1,4]<=[4]}
+  add.0 = f32[1024,256]{1,0:T(8,128)} add(param, param.1)
+  custom-call.2 = f32[1024,256]{1,0:T(8,128)} custom-call(add.0), custom_call_target="MoveToHost"
+  all-gather = f32[1024,1024]{1,0:T(8,128)} all-gather(custom-call.2), channel_id=1, replica_groups=[1,4]<=[4], dimensions={1}, use_global_device_ids=true
+  ROOT custom-call.3 = f32[1024,1024]{1,0:T(8,128)} custom-call(all-gather), custom_call_target="MoveToHost"
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, RunHostOffloader(module.get()));
+  EXPECT_TRUE(changed);
+  VLOG(1) << module->ToString();
+
+  HloInstruction* all_gather = FindInstruction(module.get(), "all-gather");
+  ASSERT_NE(all_gather, nullptr);
+  ASSERT_TRUE(
+      all_gather->frontend_attributes().map().contains(kXlaComputeTypeAttr));
+  EXPECT_EQ(all_gather->frontend_attributes().map().at(kXlaComputeTypeAttr),
+            kXlaComputeTypeHost);
 }
 
 }  // namespace

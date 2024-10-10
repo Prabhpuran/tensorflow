@@ -838,6 +838,19 @@ class HloComputation {
   // Returns if this computation is an async computation.
   bool IsAsyncComputation() const { return async_start_ != nullptr; }
 
+  // Returns true if this computation only contains send/recv instructions.
+  bool OnlyContainsSendRecv() {
+    for (const HloInstruction* instruction : this->instructions()) {
+      if (instruction->opcode() != HloOpcode::kSend &&
+          instruction->opcode() != HloOpcode::kRecv &&
+          instruction->opcode() != HloOpcode::kParameter &&
+          !instruction->IsRoot()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // Returns the owning async instruction. It's nullptr if this is not an async
   // computation.
   HloInstruction* AsyncStart() const { return async_start_; }

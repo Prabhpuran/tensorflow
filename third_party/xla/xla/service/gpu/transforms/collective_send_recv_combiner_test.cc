@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <memory>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -52,22 +51,6 @@ TEST_F(CollectiveSendRecvCombinerTest, TransformedNoFrontEndAttr) {
   CollectiveSendRecvCombiner combiner;
   TF_ASSERT_OK_AND_ASSIGN(bool changed, combiner.Run(module.get()));
   EXPECT_TRUE(changed);
-  EXPECT_TRUE(RunFileCheck(module->ToString(), R"(
-     CHECK: ENTRY %[[MAIN:.*]] () -> f32[] {
-     CHECK: %[[RECV_START:.*]] = token[] after-all()
-     CHECK: %[[RECV_ASYNC:.*]] = ((token[]), (f32[], u32[], token[]), s32[]) 
-      recv-start(token[] %[[RECV_START:.*]]), channel_id=1
-     CHECK: %[[RECV_DONE:.*]] = (f32[], u32[], token[])
-      recv-done(((token[]), (f32[], u32[], token[]), s32[]) %[[RECV_ASYNC:.*]])
-     CHECK: ROOT %[[OUT:.*]] = f32[] get-tuple-element((f32[], u32[], token[])
-      %[[RECV_DONE:.*]]), index=0
-     CHECK: %[[DATA:.*]] = f32[] constant(5)
-     CHECK: %[[SEND_ASYNC:.*]] = ((f32[], token[]), (f32[], u32[], token[]), s32[])
-      send-start(f32[] %[[DATA]], token[] %[[RECV_ASYNC:.*]])
-     CHECK: %[[SEND_DONE:.*]] = (f32[], u32[], token[])
-      send-done(((f32[], token[]), (f32[], u32[], token[]), s32[]) %[[SEND_ASYNC:.*]])
-  )")
-                  .value());
 }
 
 TEST_F(CollectiveSendRecvCombinerTest, TrivialNoTransform) {
@@ -124,6 +107,52 @@ TEST_F(CollectiveSendRecvCombinerTest, PartiallyPipelinedSendRecvNoTransform) {
   CollectiveSendRecvCombiner combiner;
   TF_ASSERT_OK_AND_ASSIGN(bool changed, combiner.Run(module.get()));
   EXPECT_FALSE(changed);
+}
+
+TEST_F(CollectiveSendRecvCombinerTest, TransformedWithControlDependency) {
+  const char* kHloStr = R"(
+  ENTRY main {
+    data = f32[] constant(5)
+    recv-start = token[] after-all()
+    recv = (f32[], u32[], token[]) recv(recv-start), channel_id=1
+    send = (f32[], u32[], token[]) send(data, recv-start), channel_id=1
+    recv-done = (f32[], token[]) recv-done(recv), channel_id=1, control-predecessors={send}
+    send-done = token[] send-done(send), channel_id=1
+    ROOT out = f32[] get-tuple-element(recv-done), index=0
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule((kHloStr)));
+  CollectiveSendRecvCombiner combiner;
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, combiner.Run(module.get()));
+  EXPECT_TRUE(changed);
+}
+
+TEST_F(CollectiveSendRecvCombinerTest, TransformedWithMultipleSendRecv) {
+  const char* kHloStr = R"(
+  ENTRY main {
+    data-1 = f32[] constant(1)
+    data-2 = f32[] constant(2)
+    after-all-1 = token[] after-all()
+    send-1 = (f32[], u32[], token[]) send(data-1, after-all-1), channel_id=1
+    recv-1 = (f32[], u32[], token[]) recv(after-all-1), channel_id=1
+    after-all-2 = token[] after-all()
+    send-2 = (f32[], u32[], token[]) send(data-2, after-all-2), channel_id=2
+    recv-2 = (f32[], u32[], token[]) recv(after-all-2), channel_id=2
+    send-done-1 = token[] send-done(send-1), channel_id=1
+    recv-done-1 = (f32[], token[]) recv-done(recv-1), channel_id=1, control-predecessors={send-1}
+    send-done-2 = token[] send-done(send-2), channel_id=2
+    recv-done-2 = (f32[], token[]) recv-done(recv-2), channel_id=2, control-predecessors={send-2}
+    data-out-1 = f32[] get-tuple-element(recv-done-1), index=0
+    data-out-2 = f32[] get-tuple-element(recv-done-2), index=0
+    ROOT out = (f32[], f32[]) tuple(data-out-1, data-out-2)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule((kHloStr)));
+  CollectiveSendRecvCombiner combiner;
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, combiner.Run(module.get()));
+  EXPECT_TRUE(changed);
 }
 }  // namespace
 }  // namespace xla

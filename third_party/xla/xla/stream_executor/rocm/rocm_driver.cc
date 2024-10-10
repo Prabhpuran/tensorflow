@@ -56,34 +56,6 @@ namespace stream_executor::gpu {
 
 namespace {
 
-// Returns the device associated with the given context.
-absl::StatusOr<hipDevice_t> DeviceFromContext(Context* context) {
-  ScopedActivateContext activated{context};
-  hipDevice_t device = -1;
-  hipError_t result = wrap::hipCtxGetDevice(&device);
-  if (result == hipSuccess) return device;
-
-  return absl::InternalError(
-      absl::StrCat("failed to get device for context: ", ToString(result)));
-}
-
-}  // namespace
-
-namespace {
-
-// Call hipDeviceSynchronize and crash if it doesn't succeed.
-void SynchronizeOrDie() {
-  auto res = wrap::hipDeviceSynchronize();
-  if (res != hipSuccess) {
-    LOG(FATAL) << "Synchronize found " << ToString(res)
-               << " :: " << tsl::CurrentStackTrace();
-  }
-}
-
-}  // namespace
-
-namespace {
-
 // Actually performs the work of ROCM initialization. Wrapped up in one-time
 // execution guard.
 static absl::Status InternalInit() {
@@ -108,16 +80,6 @@ absl::Status GpuDriver::Init() {
     return new absl::Status(InternalInit());
   }();
   return *init_retval;
-}
-
-absl::Status GpuDriver::GetDevice(int device_ordinal, hipDevice_t* device) {
-  hipError_t res = wrap::hipDeviceGet(device, device_ordinal);
-  if (res == hipSuccess) {
-    return absl::OkStatus();
-  }
-
-  return absl::InternalError(
-      absl::StrCat("failed call to hipDeviceGet: ", ToString(res)));
 }
 
 absl::Status GpuDriver::CreateGraph(hipGraph_t* graph) {
@@ -297,12 +259,6 @@ absl::StatusOr<std::string> GpuDriver::GraphDebugDotPrint(
   }
 
   return std::string(path);
-}
-
-absl::Status GpuDriver::DeviceGraphMemTrim(GpuDeviceHandle device) {
-  VLOG(2) << "Trim ROCM device graph memory " << device;
-  return ToStatus(wrap::hipDeviceGraphMemTrim(device),
-                  "Failed to trim device graph memory");
 }
 
 absl::StatusOr<bool> GpuDriver::StreamIsCapturing(GpuStreamHandle stream) {
@@ -911,183 +867,11 @@ absl::StatusOr<MemoryType> GpuDriver::GetPointerMemorySpace(
       "failed to query device pointer for memory space: ", ToString(result)));
 }
 
-absl::Status GpuDriver::GetGpuGCNArchName(hipDevice_t device,
-                                          std::string* gcnArchName) {
-  hipDeviceProp_t props;
-  hipError_t result = wrap::hipGetDeviceProperties(&props, device);
-  if (result == hipSuccess) {
-    *gcnArchName = props.gcnArchName;
-    return absl::OkStatus();
-  }
-  *gcnArchName = "";
-  return absl::InternalError(absl::StrFormat(
-      "failed to determine AMDGpu GCN Arch Name for device %d", device));
-}
-
-// Helper function that turns the integer output of hipDeviceGetAttribute to
-// type T and wraps it in a absl::StatusOr.
-template <typename T>
-static absl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
-                                            hipDeviceAttribute_t attribute) {
-  int value = -1;
-  hipError_t result = wrap::hipDeviceGetAttribute(&value, attribute, device);
-  if (result != hipSuccess) {
-    return absl::NotFoundError(
-        absl::StrCat("could not retrieve ROCM device attribute (", attribute,
-                     "): ", ToString(result)));
-  }
-  T converted = value;
-  return converted;
-}
-
-absl::StatusOr<int> GpuDriver::GetMultiprocessorCount(hipDevice_t device) {
-  return GetSimpleAttribute<int>(device, hipDeviceAttributeMultiprocessorCount);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerCore(
-    hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(
-      device, hipDeviceAttributeMaxSharedMemoryPerMultiprocessor);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerBlock(
-    hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(device,
-                                     hipDeviceAttributeMaxSharedMemoryPerBlock);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxThreadsPerMultiprocessor(
-    hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(
-      device, hipDeviceAttributeMaxThreadsPerMultiProcessor);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxRegistersPerBlock(hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(device,
-                                     hipDeviceAttributeMaxRegistersPerBlock);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetThreadsPerWarp(hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(device, hipDeviceAttributeWarpSize);
-}
-
-absl::Status GpuDriver::GetGridLimits(int* x, int* y, int* z,
-                                      hipDevice_t device) {
-  int value;
-  TF_RETURN_IF_ERROR(
-      ToStatus(wrap::hipDeviceGetAttribute(
-                   &value, hipDeviceAttributeMaxGridDimX, device),
-               "failed to query max grid dim x"));
-  *x = value;
-
-  TF_RETURN_IF_ERROR(
-      ToStatus(wrap::hipDeviceGetAttribute(
-                   &value, hipDeviceAttributeMaxGridDimY, device),
-               "failed to query max grid dim y"));
-  *y = value;
-
-  TF_RETURN_IF_ERROR(
-      ToStatus(wrap::hipDeviceGetAttribute(
-                   &value, hipDeviceAttributeMaxGridDimZ, device),
-               "failed to query max grid dim z"));
-  *z = value;
-  return absl::OkStatus();
-}
-
 absl::StatusOr<int32_t> GpuDriver::GetDriverVersion() {
   int32_t version;
   TF_RETURN_IF_ERROR(ToStatus(wrap::hipDriverGetVersion(&version),
                               "Could not get driver version"));
   return version;
-}
-
-bool GpuDriver::GetDeviceProperties(hipDeviceProp_t* device_properties,
-                                    int device_ordinal) {
-  hipError_t res =
-      wrap::hipGetDeviceProperties(device_properties, device_ordinal);
-  if (res != hipSuccess) {
-    LOG(ERROR) << "failed to query device properties: " << ToString(res);
-    return false;
-  }
-
-  return true;
-}
-
-bool GpuDriver::IsEccEnabled(hipDevice_t device, bool* result) {
-  int value = -1;
-  hipError_t res = hipSuccess;
-  // TODO(ROCm) implement this feature in HIP
-  if (res != hipSuccess) {
-    LOG(ERROR) << "failed to query ECC status: " << ToString(res);
-    return false;
-  }
-
-  *result = value;
-  return true;
-}
-
-std::string GpuDriver::GetPCIBusID(hipDevice_t device) {
-  std::string pci_bus_id;
-  static const int kBufferSize = 64;
-  absl::InlinedVector<char, 4> chars(kBufferSize);
-  chars[kBufferSize - 1] = '\0';
-  hipError_t res =
-      wrap::hipDeviceGetPCIBusId(chars.begin(), kBufferSize - 1, device);
-  if (res != hipSuccess) {
-    LOG(ERROR) << "failed to query PCI bus id for device: " << ToString(res);
-    return pci_bus_id;
-  }
-  pci_bus_id = chars.begin();
-  return pci_bus_id;
-}
-
-bool GpuDriver::CanEnablePeerAccess(Context* from, Context* to) {
-  // A context can always access its own memory.
-  if (from == to) return true;
-
-  auto from_device = DeviceFromContext(from);
-  if (!from_device.ok()) {
-    LOG(ERROR) << "failed to resolve 'from' peer access context to a device: "
-               << from_device.status();
-    return false;
-  }
-
-  auto to_device = DeviceFromContext(to);
-  if (!to_device.ok()) {
-    LOG(ERROR) << "failed to resolve 'to' peer access context to a device: "
-               << to_device.status();
-    return false;
-  }
-  return CanEnablePeerAccess(from_device.value(), to_device.value());
-}
-
-bool GpuDriver::CanEnablePeerAccess(GpuDeviceHandle from, GpuDeviceHandle to) {
-  int can_access_peer = -1;
-  hipError_t result = wrap::hipDeviceCanAccessPeer(&can_access_peer, from, to);
-  if (result != hipSuccess) {
-    LOG(ERROR) << "failed to detect peer access capability: "
-               << ToString(result);
-    return false;
-  }
-  return can_access_peer;
-}
-
-absl::Status GpuDriver::EnablePeerAccess(Context* from, Context* to) {
-  if (from == to) {
-    return absl::OkStatus();  // A device can always access its own memory.
-  }
-
-  ScopedActivateContext activated{from};
-  hipError_t result = wrap::hipCtxEnablePeerAccess(
-      tensorflow::down_cast<RocmContext*>(to)->context(), 0 /* = flags */);
-  if (result != hipSuccess && result != hipErrorPeerAccessAlreadyEnabled) {
-    return absl::InternalError(
-        absl::StrFormat("failed to enable peer access from %d to %d: %s",
-                        from->device_ordinal(), to->device_ordinal(),
-                        ToString(result).c_str()));
-  }
-
-  return absl::OkStatus();
 }
 
 absl::StatusOr<int> GpuDriver::GetMaxOccupiedBlocksPerCore(

@@ -256,6 +256,83 @@ absl::StatusOr<std::string> GetGpuGCNArchName(hipDevice_t device) {
       "failed to determine AMDGpu GCN Arch Name for device %d", device));
 }
 
+// Helper function that turns the integer output of hipDeviceGetAttribute to
+// type T and wraps it in a absl::StatusOr.
+template <typename T>
+static absl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
+                                            hipDeviceAttribute_t attribute) {
+  int value = -1;
+  hipError_t result = wrap::hipDeviceGetAttribute(&value, attribute, device);
+  if (result != hipSuccess) {
+    return absl::NotFoundError(
+        absl::StrCat("could not retrieve ROCM device attribute (", attribute,
+                     "): ", ToString(result)));
+  }
+  T converted = value;
+  return converted;
+}
+
+// Returns the number of multiprocessors on the device (note that the device
+// may be multi-GPU-per-board).
+
+absl::StatusOr<int> GetMultiprocessorCount(hipDevice_t device) {
+  return GetSimpleAttribute<int>(device, hipDeviceAttributeMultiprocessorCount);
+}
+
+absl::StatusOr<int64_t> GetMaxSharedMemoryPerCore(hipDevice_t device) {
+  return GetSimpleAttribute<int64_t>(
+      device, hipDeviceAttributeMaxSharedMemoryPerMultiprocessor);
+}
+
+absl::StatusOr<int64_t> GetMaxSharedMemoryPerBlock(hipDevice_t device) {
+  return GetSimpleAttribute<int64_t>(device,
+                                     hipDeviceAttributeMaxSharedMemoryPerBlock);
+}
+
+absl::StatusOr<int64_t> GetMaxThreadsPerMultiprocessor(hipDevice_t device) {
+  return GetSimpleAttribute<int64_t>(
+      device, hipDeviceAttributeMaxThreadsPerMultiProcessor);
+}
+
+absl::StatusOr<int64_t> GetMaxRegistersPerBlock(hipDevice_t device) {
+  return GetSimpleAttribute<int64_t>(device,
+                                     hipDeviceAttributeMaxRegistersPerBlock);
+}
+
+absl::StatusOr<int64_t> GetThreadsPerWarp(hipDevice_t device) {
+  return GetSimpleAttribute<int64_t>(device, hipDeviceAttributeWarpSize);
+}
+
+absl::Status GetGridLimits(int* x, int* y, int* z, hipDevice_t device) {
+  int value;
+  RETURN_IF_ROCM_ERROR(wrap::hipDeviceGetAttribute(
+                           &value, hipDeviceAttributeMaxGridDimX, device),
+                       "failed to query max grid dim x");
+  *x = value;
+
+  RETURN_IF_ROCM_ERROR(wrap::hipDeviceGetAttribute(
+                           &value, hipDeviceAttributeMaxGridDimY, device),
+                       "failed to query max grid dim y");
+  *y = value;
+
+  RETURN_IF_ROCM_ERROR(wrap::hipDeviceGetAttribute(
+                           &value, hipDeviceAttributeMaxGridDimZ, device),
+                       "failed to query max grid dim z");
+  *z = value;
+  return absl::OkStatus();
+}
+
+// Returns the device associated with the given device_ordinal.
+absl::StatusOr<hipDevice_t> GetDevice(int device_ordinal) {
+  hipDevice_t device;
+  hipError_t res = wrap::hipDeviceGet(&device, device_ordinal);
+  if (res == hipSuccess) {
+    return device;
+  }
+
+  return absl::InternalError(
+      absl::StrCat("failed call to hipDeviceGet: ", ToString(res)));
+}
 }  // namespace
 
 RocmExecutor::~RocmExecutor() {
@@ -377,7 +454,7 @@ void RocmExecutor::UnloadKernel(const Kernel* kernel) {
 absl::Status RocmExecutor::Init() {
   TF_RETURN_IF_ERROR(GpuDriver::Init());
 
-  TF_RETURN_IF_ERROR(GpuDriver::GetDevice(device_ordinal(), &device_));
+  TF_ASSIGN_OR_RETURN(device_, GetDevice(device_ordinal()));
 
   TF_ASSIGN_OR_RETURN(rocm_context_,
                       RocmContext::Create(device_ordinal(), device_));
@@ -672,7 +749,7 @@ absl::Status FillBlockDimLimit(GpuDeviceHandle device,
   // (as opposed to ThreadDim which expresses the dimensions of threads
   // within a block).
   int x, y, z;
-  TF_RETURN_IF_ERROR(GpuDriver::GetGridLimits(&x, &y, &z, device));
+  TF_RETURN_IF_ERROR(GetGridLimits(&x, &y, &z, device));
 
   block_dim_limit->x = x;
   block_dim_limit->y = y;
@@ -709,11 +786,7 @@ absl::Status RocmExecutor::TrimGraphMemory() {
 
 absl::StatusOr<std::unique_ptr<DeviceDescription>>
 RocmExecutor::CreateDeviceDescription(int device_ordinal) {
-  GpuDeviceHandle device;
-  auto status = GpuDriver::GetDevice(device_ordinal, &device);
-  if (!status.ok()) {
-    return status;
-  }
+  TF_ASSIGN_OR_RETURN(GpuDeviceHandle device, GetDevice(device_ordinal));
 
   TF_ASSIGN_OR_RETURN(std::string gcn_arch_name, GetGpuGCNArchName(device));
 
@@ -784,18 +857,15 @@ RocmExecutor::CreateDeviceDescription(int device_ordinal) {
   desc.set_device_vendor("Advanced Micro Devices, Inc");
   desc.set_rocm_compute_capability(gcn_arch_name);
 
-  desc.set_shared_memory_per_core(
-      GpuDriver::GetMaxSharedMemoryPerCore(device).value());
-  desc.set_shared_memory_per_block(
-      GpuDriver::GetMaxSharedMemoryPerBlock(device).value());
-  int core_count = GpuDriver::GetMultiprocessorCount(device).value();
+  desc.set_shared_memory_per_core(GetMaxSharedMemoryPerCore(device).value());
+  desc.set_shared_memory_per_block(GetMaxSharedMemoryPerBlock(device).value());
+  int core_count = GetMultiprocessorCount(device).value();
   desc.set_core_count(core_count);
   desc.set_fpus_per_core(fpus_per_core(gcn_arch_name));
   desc.set_threads_per_core_limit(
-      GpuDriver::GetMaxThreadsPerMultiprocessor(device).value());
-  desc.set_registers_per_block_limit(
-      GpuDriver::GetMaxRegistersPerBlock(device).value());
-  desc.set_threads_per_warp(GpuDriver::GetThreadsPerWarp(device).value());
+      GetMaxThreadsPerMultiprocessor(device).value());
+  desc.set_registers_per_block_limit(GetMaxRegistersPerBlock(device).value());
+  desc.set_threads_per_warp(GetThreadsPerWarp(device).value());
   desc.set_registers_per_core_limit(64 * 1024);
   desc.set_compile_time_toolkit_version(
       SemanticVersion{HIP_VERSION_MAJOR, HIP_VERSION_MINOR, HIP_VERSION_PATCH});

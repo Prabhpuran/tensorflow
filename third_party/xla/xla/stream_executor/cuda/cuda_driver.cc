@@ -101,11 +101,6 @@ absl::Status GpuDriver::Init() {
   return *init_retval;
 }
 
-absl::Status GpuDriver::GetDevice(int device_ordinal, CUdevice* device) {
-  return cuda::ToStatus(cuDeviceGet(device, device_ordinal),
-                        "Failed call to cuDeviceGet");
-}
-
 absl::Status GpuDriver::CreateGraph(CUgraph* graph) {
   VLOG(2) << "Create new CUDA graph";
   TF_RETURN_IF_ERROR(cuda::ToStatus(cuGraphCreate(graph, /*flags=*/0),
@@ -335,12 +330,6 @@ absl::StatusOr<std::string> GpuDriver::GraphDebugDotPrint(
 #endif  // CUDA_VERSION >= 12000
 
   return std::string(path);
-}
-
-absl::Status GpuDriver::DeviceGraphMemTrim(CUdevice device) {
-  VLOG(2) << "Trim CUDA device graph memory " << device;
-  return cuda::ToStatus(cuDeviceGraphMemTrim(device),
-                        "Failed to trim device graph memory");
 }
 
 absl::StatusOr<bool> GpuDriver::StreamIsCapturing(CUstream stream) {
@@ -1088,98 +1077,6 @@ absl::Status GpuDriver::GetPointerAddressRange(CUdeviceptr dptr,
                                                CUdeviceptr* base,
                                                size_t* size) {
   return cuda::ToStatus(cuMemGetAddressRange(base, size, dptr));
-}
-
-absl::Status GpuDriver::GetComputeCapability(int* cc_major, int* cc_minor,
-                                             CUdevice device) {
-  *cc_major = 0;
-  *cc_minor = 0;
-
-  TF_RETURN_IF_ERROR(cuda::ToStatus(cuDeviceGetAttribute(
-      cc_major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device)));
-
-  return cuda::ToStatus(cuDeviceGetAttribute(
-      cc_minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device));
-}
-
-absl::Status GpuDriver::GetGpuISAVersion(int* version, CUdevice device) {
-  return absl::Status{
-      absl::StatusCode::kInternal,
-      "Feature not supported on CUDA platform (GetGpuISAVersion)"};
-}
-
-absl::Status GpuDriver::GetGpuGCNArchName(CUdevice, std::string*) {
-  return absl::Status{
-      absl::StatusCode::kInternal,
-      "Feature not supported on CUDA platform (GetGpuGCNArchName)"};
-}
-
-// Helper function that turns the integer output of cuDeviceGetAttribute to type
-// T and wraps it in a absl::StatusOr.
-template <typename T>
-static absl::StatusOr<T> GetSimpleAttribute(CUdevice device,
-                                            CUdevice_attribute attribute) {
-  int value = -1;
-  TF_RETURN_IF_ERROR(cuda::ToStatus(
-      cuDeviceGetAttribute(&value, attribute, device),
-      absl::StrCat("Could not retrieve CUDA device attribute (", attribute)));
-  T converted = value;
-  return converted;
-}
-
-absl::StatusOr<int> GpuDriver::GetMultiprocessorCount(CUdevice device) {
-  return GetSimpleAttribute<int>(device,
-                                 CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerCore(CUdevice device) {
-  return GetSimpleAttribute<int64_t>(
-      device, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerBlock(CUdevice device) {
-  return GetSimpleAttribute<int64_t>(
-      device, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerBlockOptin(
-    CUdevice device) {
-  return GetSimpleAttribute<int64_t>(
-      device, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxThreadsPerMultiprocessor(
-    CUdevice device) {
-  return GetSimpleAttribute<int64_t>(
-      device, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxRegistersPerBlock(CUdevice device) {
-  return GetSimpleAttribute<int64_t>(
-      device, CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetThreadsPerWarp(CUdevice device) {
-  return GetSimpleAttribute<int64_t>(device, CU_DEVICE_ATTRIBUTE_WARP_SIZE);
-}
-
-absl::Status GpuDriver::GetGridLimits(int* x, int* y, int* z, CUdevice device) {
-  int value;
-  TF_RETURN_IF_ERROR(cuda::ToStatus(
-      cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, device),
-      "Could not get device attribute"));
-  *x = value;
-
-  TF_RETURN_IF_ERROR(cuda::ToStatus(
-      cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, device),
-      "Could not get device attribute"));
-  *y = value;
-
-  TF_RETURN_IF_ERROR(cuda::ToStatus(
-      cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, device),
-      "Could not get device attribute"));
-  *z = value;
-  return absl::OkStatus();
 }
 
 absl::StatusOr<int32_t> GpuDriver::GetDriverVersion() {

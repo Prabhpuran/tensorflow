@@ -110,16 +110,6 @@ absl::Status GpuDriver::Init() {
   return *init_retval;
 }
 
-absl::Status GpuDriver::GetDevice(int device_ordinal, hipDevice_t* device) {
-  hipError_t res = wrap::hipDeviceGet(device, device_ordinal);
-  if (res == hipSuccess) {
-    return absl::OkStatus();
-  }
-
-  return absl::InternalError(
-      absl::StrCat("failed call to hipDeviceGet: ", ToString(res)));
-}
-
 absl::Status GpuDriver::CreateGraph(hipGraph_t* graph) {
   VLOG(2) << "Create new HIP graph";
   TF_RETURN_IF_ERROR(ToStatus(wrap::hipGraphCreate(graph, /*flags=*/0),
@@ -297,12 +287,6 @@ absl::StatusOr<std::string> GpuDriver::GraphDebugDotPrint(
   }
 
   return std::string(path);
-}
-
-absl::Status GpuDriver::DeviceGraphMemTrim(GpuDeviceHandle device) {
-  VLOG(2) << "Trim ROCM device graph memory " << device;
-  return ToStatus(wrap::hipDeviceGraphMemTrim(device),
-                  "Failed to trim device graph memory");
 }
 
 absl::StatusOr<bool> GpuDriver::StreamIsCapturing(GpuStreamHandle stream) {
@@ -923,107 +907,6 @@ absl::StatusOr<MemoryType> GpuDriver::GetPointerMemorySpace(
 
   return absl::InternalError(absl::StrCat(
       "failed to query device pointer for memory space: ", ToString(result)));
-}
-
-absl::Status GpuDriver::GetGpuISAVersion(int* version, hipDevice_t device) {
-  hipDeviceProp_t props;
-  hipError_t result = wrap::hipGetDeviceProperties(&props, device);
-  if (result == hipSuccess) {
-    std::string gcnName = props.gcnArchName;
-    std::vector<std::string> tokens = absl::StrSplit(gcnName, ':');
-    std::string amdgpu_version = gcnName;
-    if (!tokens.empty() && tokens[0].size() >= 3) {
-      amdgpu_version = tokens[0].substr(3);
-    }
-    *version = stoi(amdgpu_version);
-    return absl::OkStatus();
-  }
-  *version = 0;
-  return absl::InternalError(absl::StrFormat(
-      "failed to determine AMDGpu ISA version for device %d", device));
-}
-
-absl::Status GpuDriver::GetGpuGCNArchName(hipDevice_t device,
-                                          std::string* gcnArchName) {
-  hipDeviceProp_t props;
-  hipError_t result = wrap::hipGetDeviceProperties(&props, device);
-  if (result == hipSuccess) {
-    *gcnArchName = props.gcnArchName;
-    return absl::OkStatus();
-  }
-  *gcnArchName = "";
-  return absl::InternalError(absl::StrFormat(
-      "failed to determine AMDGpu GCN Arch Name for device %d", device));
-}
-
-// Helper function that turns the integer output of hipDeviceGetAttribute to
-// type T and wraps it in a absl::StatusOr.
-template <typename T>
-static absl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
-                                            hipDeviceAttribute_t attribute) {
-  int value = -1;
-  hipError_t result = wrap::hipDeviceGetAttribute(&value, attribute, device);
-  if (result != hipSuccess) {
-    return absl::NotFoundError(
-        absl::StrCat("could not retrieve ROCM device attribute (", attribute,
-                     "): ", ToString(result)));
-  }
-  T converted = value;
-  return converted;
-}
-
-absl::StatusOr<int> GpuDriver::GetMultiprocessorCount(hipDevice_t device) {
-  return GetSimpleAttribute<int>(device, hipDeviceAttributeMultiprocessorCount);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerCore(
-    hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(
-      device, hipDeviceAttributeMaxSharedMemoryPerMultiprocessor);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxSharedMemoryPerBlock(
-    hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(device,
-                                     hipDeviceAttributeMaxSharedMemoryPerBlock);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxThreadsPerMultiprocessor(
-    hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(
-      device, hipDeviceAttributeMaxThreadsPerMultiProcessor);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetMaxRegistersPerBlock(hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(device,
-                                     hipDeviceAttributeMaxRegistersPerBlock);
-}
-
-absl::StatusOr<int64_t> GpuDriver::GetThreadsPerWarp(hipDevice_t device) {
-  return GetSimpleAttribute<int64_t>(device, hipDeviceAttributeWarpSize);
-}
-
-absl::Status GpuDriver::GetGridLimits(int* x, int* y, int* z,
-                                      hipDevice_t device) {
-  int value;
-  TF_RETURN_IF_ERROR(
-      ToStatus(wrap::hipDeviceGetAttribute(
-                   &value, hipDeviceAttributeMaxGridDimX, device),
-               "failed to query max grid dim x"));
-  *x = value;
-
-  TF_RETURN_IF_ERROR(
-      ToStatus(wrap::hipDeviceGetAttribute(
-                   &value, hipDeviceAttributeMaxGridDimY, device),
-               "failed to query max grid dim y"));
-  *y = value;
-
-  TF_RETURN_IF_ERROR(
-      ToStatus(wrap::hipDeviceGetAttribute(
-                   &value, hipDeviceAttributeMaxGridDimZ, device),
-               "failed to query max grid dim z"));
-  *z = value;
-  return absl::OkStatus();
 }
 
 absl::StatusOr<int32_t> GpuDriver::GetDriverVersion() {

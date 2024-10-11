@@ -1590,6 +1590,25 @@ class CopyRemover {
       VLOG(2) << "Region-based interference is false.";
       return false;
     };
+    // Returns true if:
+    // 1. `src` is a buffer containing a single HloModule parameter
+    // that is input output aliased.
+    // 2. `dest` is a buffer containing a single HloInstruction that is a
+    // an update in place operation.
+    auto CheckInPlaceModuleInputOutputAlias = [&](ValueNode* src,
+                                                  ValueNode* dest) {
+      HloInstruction* src_instruction = src->value->instruction();
+      HloInstruction* dest_instruction = dest->value->instruction();
+      bool src_is_input_output_aliased_module_param =
+          src_instruction->opcode() == HloOpcode::kParameter &&
+          copy->GetModule()->input_output_alias_config().ParameterHasAlias(
+              src_instruction->parameter_number(), src->value->index());
+      bool dest_is_single_update_in_place_instr =
+          HloDataflowAnalysis::IsInPlaceOperation(dest_instruction->opcode()) &&
+          dest->next == dest->prev;
+      return src_is_input_output_aliased_module_param &&
+             dest_is_single_update_in_place_instr;
+    };
 
     // A kCopy instruction copies an HLO value from a source buffer and
     // defines an HLO value in a destination buffer. Most generally, the
@@ -1667,9 +1686,12 @@ class CopyRemover {
           // Live range of 'last_dest' (d_m) must be before 'next_src' s_{x+1}.
           CheckLiveRangeBefore(copy_node.dest->prev, Next(*copy_node.src));
       VLOG(2) << "LiveRangeBefore result: " << live_range_before;
+
       if (!live_range_before &&
           CheckLiveRangeInterference(copy_node.src, copy_node.dest,
-                                     kMergeFirstDestInSource)) {
+                                     kMergeFirstDestInSource) &&
+          !CheckInPlaceModuleInputOutputAlias(copy_node.src,
+                                              copy_node.dest->next)) {
         return false;
       }
       VLOG(2) << "Splice dest after source.";

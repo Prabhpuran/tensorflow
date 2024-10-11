@@ -147,7 +147,10 @@ class LayoutNormalizationVisitor : public DfsHloRewriteVisitor {
     auto bc_to_normalized = MakeBitcastHlo(hlo, normalized_shape);
     SetVisited(*bc_to_normalized);
     auto bc_to_orig = MakeBitcastHlo(bc_to_normalized, shape);
-    TF_RETURN_IF_ERROR(hlo->ReplaceUsesWith(users, bc_to_orig));
+    VLOG(3) << "DefaultAction.ReplaceUsesWith: " << users.size()
+            << " original users vs " << bc_to_orig->users().size()
+            << " bc_to_orig users";
+    TF_RETURN_IF_ERROR(hlo->ReplaceAllUsesWith(bc_to_orig, bc_to_normalized));
     MarkAsChanged();
     return absl::OkStatus();
   }

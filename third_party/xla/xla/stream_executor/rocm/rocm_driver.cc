@@ -305,16 +305,6 @@ absl::Status GpuDriver::DeviceGraphMemTrim(GpuDeviceHandle device) {
                   "Failed to trim device graph memory");
 }
 
-absl::StatusOr<bool> GpuDriver::StreamIsCapturing(GpuStreamHandle stream) {
-  VLOG(2) << "Checking if stream " << stream << " is capturing";
-
-  hipStreamCaptureStatus status;
-  TF_RETURN_IF_ERROR(ToStatus(wrap::hipStreamIsCapturing(stream, &status),
-                              "Failed to check stream capturing status"));
-
-  return status == hipStreamCaptureStatusActive;
-}
-
 absl::Status GpuDriver::GraphConditionalHandleCreate(
     GpuGraphConditionalHandle* handle, hipGraph_t graph, Context* context,
     unsigned int default_launch_value, unsigned int flags) {
@@ -565,60 +555,6 @@ absl::Status GpuDriver::GraphExecMemsetNodeSetParams(
                   "Failed to set memset node params");
 }
 
-absl::Status GpuDriver::LaunchKernel(
-    Context* context, absl::string_view kernel_name, hipFunction_t function,
-    unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
-    unsigned int block_dim_x, unsigned int block_dim_y,
-    unsigned int block_dim_z, unsigned int shared_mem_bytes,
-    GpuStreamHandle stream, void** kernel_params, void** extra) {
-  ScopedActivateContext activation{context};
-  VLOG(2) << "launching kernel: " << kernel_name << "; gdx: " << grid_dim_x
-          << " gdy: " << grid_dim_y << " gdz: " << grid_dim_z
-          << " bdx: " << block_dim_x << " bdy: " << block_dim_y
-          << " bdz: " << block_dim_z << " smem: " << shared_mem_bytes
-          << " func: " << (const void*)function;
-
-  auto res = hipSuccess;
-#if TF_ROCM_VERSION < 60200
-  // for in-process kernel this function returns mangled kernel function name,
-  // and null otherwise
-  auto name = wrap::hipKernelNameRefByPtr((const void*)function, stream);
-  if (name != nullptr) {
-    res = wrap::hipLaunchKernel((const void*)function,
-                                dim3(grid_dim_x, grid_dim_y, grid_dim_z),
-                                dim3(block_dim_x, block_dim_y, block_dim_z),
-                                kernel_params, shared_mem_bytes, stream);
-  } else  // NOLINT(readability/braces)
-#endif    // TF_ROCM_VERSION < 60200
-  {
-    res = wrap::hipModuleLaunchKernel(
-        function, grid_dim_x, grid_dim_y, grid_dim_z, block_dim_x, block_dim_y,
-        block_dim_z, shared_mem_bytes, stream, kernel_params, extra);
-  }
-  TF_RETURN_IF_ERROR(
-      ToStatus(res, absl::StrCat("Failed to launch ROCm kernel: ", kernel_name,
-                                 " with block dimensions: ", block_dim_x, "x",
-                                 block_dim_y, "x", block_dim_z)));
-
-  VLOG(2) << "successfully launched kernel";
-  return absl::OkStatus();
-}
-
-absl::Status GpuDriver::LaunchKernel(
-    Context* context, absl::string_view kernel_name, GpuFunctionHandle function,
-    unsigned int cluster_dim_x, unsigned int cluster_dim_y,
-    unsigned int cluster_dim_z, unsigned int grid_dim_x,
-    unsigned int grid_dim_y, unsigned int grid_dim_z, unsigned int block_dim_x,
-    unsigned int block_dim_y, unsigned int block_dim_z,
-    unsigned int shared_mem_bytes, GpuStreamHandle stream, void** kernel_params,
-    void** extra) {
-  if (cluster_dim_x != 1 || cluster_dim_y != 1 || cluster_dim_z != 1)
-    return absl::UnimplementedError("Not implemented for ROCm");
-  return LaunchKernel(context, kernel_name, function, grid_dim_x, grid_dim_y,
-                      grid_dim_z, block_dim_x, block_dim_y, block_dim_z,
-                      shared_mem_bytes, stream, kernel_params, extra);
-}
-
 absl::Status GpuDriver::SynchronousMemsetUint8(Context* context,
                                                hipDeviceptr_t location,
                                                uint8_t value, size_t size) {
@@ -635,13 +571,6 @@ absl::Status GpuDriver::SynchronousMemsetUint32(Context* context,
   void* pointer = absl::bit_cast<void*>(location);
   return ToStatus(wrap::hipMemsetD32(pointer, value, uint32_count),
                   "Failed to memset memory");
-}
-
-absl::Status GpuDriver::AddStreamCallback(Context* context,
-                                          GpuStreamHandle stream,
-                                          StreamCallback callback, void* data) {
-  return ToStatus(wrap::hipLaunchHostFunc(stream, (hipHostFn_t)callback, data),
-                  "unable to add host callback");
 }
 
 void GpuDriver::DestroyStream(Context* context, GpuStreamHandle stream) {
@@ -786,66 +715,6 @@ absl::Status GpuDriver::SynchronousMemcpyH2D(Context* context,
           " host src: %p; size: %llu=0x%llx",
           absl::bit_cast<void*>(gpu_dst), host_src, size, size)));
   VLOG(2) << "successfully sync memcpy'd h2d of " << size << " bytes";
-  return absl::OkStatus();
-}
-
-absl::Status GpuDriver::AsynchronousMemcpyD2H(Context* context, void* host_dst,
-                                              hipDeviceptr_t gpu_src,
-                                              uint64_t size,
-                                              GpuStreamHandle stream) {
-  ScopedActivateContext activation{context};
-  TF_RETURN_IF_ERROR(ToStatus(
-      wrap::hipMemcpyDtoHAsync(host_dst, gpu_src, size, stream),
-      absl::StrFormat(
-          "failed to enqueue async memcpy from device to host: host dst: %p; "
-          "Gpu src: %p; size: %llu=0x%llx",
-          host_dst, absl::bit_cast<void*>(gpu_src), size, size)));
-
-  VLOG(2) << "successfully enqueued async memcpy d2h of " << size
-          << " bytes from " << absl::bit_cast<void*>(gpu_src) << " to "
-          << host_dst << " on stream " << stream
-          << " device: " << context->device_ordinal();
-  return absl::OkStatus();
-}
-
-absl::Status GpuDriver::AsynchronousMemcpyH2D(Context* context,
-                                              hipDeviceptr_t gpu_dst,
-                                              const void* host_src,
-                                              uint64_t size,
-                                              GpuStreamHandle stream) {
-  ScopedActivateContext activation{context};
-  TF_RETURN_IF_ERROR(ToStatus(
-      wrap::hipMemcpyHtoDAsync(gpu_dst, const_cast<void*>(host_src), size,
-                               stream),
-      absl::StrFormat(
-          "failed to enqueue async memcpy from host to device: Gpu dst: %p; "
-          "host src: %p; size: %llu=0x%llx",
-          absl::bit_cast<void*>(gpu_dst), host_src, size, size)));
-
-  VLOG(2) << "successfully enqueued async memcpy h2d of " << size
-          << " bytes from " << host_src << " to "
-          << absl::bit_cast<void*>(gpu_dst) << " on stream " << stream
-          << " device: " << context->device_ordinal();
-  return absl::OkStatus();
-}
-
-absl::Status GpuDriver::AsynchronousMemcpyD2D(Context* context,
-                                              hipDeviceptr_t gpu_dst,
-                                              hipDeviceptr_t gpu_src,
-                                              uint64_t size,
-                                              GpuStreamHandle stream) {
-  ScopedActivateContext activation{context};
-  TF_RETURN_IF_ERROR(ToStatus(
-      wrap::hipMemcpyDtoDAsync(gpu_dst, gpu_src, size, stream),
-      absl::StrFormat("failed to enqueue async memcpy from device to device: "
-                      "Gpu dst: %p ; Gpu src: %p ; size: %llu=0x%llx",
-                      absl::bit_cast<void*>(gpu_dst),
-                      absl::bit_cast<void*>(gpu_src), size, size)));
-
-  VLOG(2) << "successfully enqueued async memcpy d2d of " << size
-          << " bytes from " << absl::bit_cast<void*>(gpu_src) << " to "
-          << absl::bit_cast<void*>(gpu_dst) << " on stream " << stream
-          << " device: " << context->device_ordinal();
   return absl::OkStatus();
 }
 

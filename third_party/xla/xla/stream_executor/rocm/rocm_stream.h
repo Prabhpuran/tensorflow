@@ -22,6 +22,7 @@ limitations under the License.
 #include <utility>
 #include <variant>
 
+#include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "rocm/include/hip/hip_runtime.h"
@@ -29,6 +30,8 @@ limitations under the License.
 #include "xla/stream_executor/event.h"
 #include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_stream.h"
+#include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/rocm/rocm_event.h"
 #include "xla/stream_executor/stream.h"
@@ -45,6 +48,14 @@ class RocmStream : public GpuStream {
   absl::Status Memset32(DeviceMemoryBase* location, uint32_t pattern,
                         uint64_t size) override;
   absl::Status MemZero(DeviceMemoryBase* location, uint64_t size) override;
+  absl::Status Memcpy(DeviceMemoryBase* gpu_dst, const void* host_src,
+                      uint64_t size) override;
+  absl::Status Memcpy(void* host_dst, const DeviceMemoryBase& gpu_src,
+                      uint64_t size) override;
+  absl::Status Memcpy(DeviceMemoryBase* gpu_dst,
+                      const DeviceMemoryBase& gpu_src, uint64_t size) override;
+  absl::Status DoHostCallbackWithStatus(
+      absl::AnyInvocable<absl::Status() &&> callback) override;
 
   static absl::StatusOr<std::unique_ptr<RocmStream>> Create(
       GpuExecutor* executor,
@@ -61,6 +72,10 @@ class RocmStream : public GpuStream {
         completed_event_(std::move(completed_event)) {}
 
   absl::Status RecordCompletedEvent();
+
+  absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
+                      const std::optional<ClusterDim>& cluster_dims,
+                      const Kernel& kernel, const KernelArgs& args) override;
 
   GpuExecutor* executor_;
   RocmEvent completed_event_;
